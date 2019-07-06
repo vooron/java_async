@@ -1,6 +1,8 @@
 package async.promise;
 
+import java.util.Collections;
 import java.util.LinkedList;
+import java.util.List;
 
 public class Promise<T> {
 
@@ -8,17 +10,33 @@ public class Promise<T> {
     private LinkedList<ThenHandler<T>> thenHandlerList = new LinkedList<>();
     private CatchHandler catchHandler = null;
 
+    private T result;
+
+    private boolean isTerminateOperatorPresent = false;
+    private boolean isStarted = false;
+    private boolean isFinished = false;
+
     public Promise(PromiseTask<T> task) {
         this.task = task;
     }
 
     private void execute() {
-        new Thread(() -> {
 
+        new Thread(() -> {
             try {
-                T result = task.run();
-                while (!thenHandlerList.isEmpty()) {
-                    result = thenHandlerList.pop().handle(result);
+                result = task.run();
+
+                synchronized (this) {
+
+                    while (!isTerminateOperatorPresent && !thenHandlerList.isEmpty()) {
+
+                        result = thenHandlerList.pop().handle(result);
+
+                        while (thenHandlerList.isEmpty()) {
+                            wait();
+                        }
+                    }
+
                 }
             } catch (Exception e) {
                 if (catchHandler != null) {
@@ -26,28 +44,31 @@ public class Promise<T> {
                 }
             }
 
+            isFinished = true;
+
         }).start();
     }
 
-    public Promise<T> then(ThenHandler<T> thenHandler, CatchHandler catchHandler) {
+    public synchronized Promise<T> then(ThenHandler<T> thenHandler) {
+
+        if (isTerminateOperatorPresent) {
+            throw new ThreadInterruptedException("Thread was alredy interrupted");
+        }
+
         if (thenHandler == null) {
             throw new IllegalArgumentException("Runnable can`t be null");
         }
 
         thenHandlerList.add(thenHandler);
-        if (catchHandler != null && this.catchHandler != null) {
-            this.catchHandler = catchHandler;
+
+        if (!isStarted) {
+            execute();
+            isStarted = true;
         }
 
-        if (thenHandlerList.size() == 1) {
-            execute();
-        }
+        notifyAll();
 
         return this;
-    }
-
-    public Promise<T> then(ThenHandler<T> thenHandler) {
-        return then(thenHandler, null);
     }
 
     public Promise<T> then(ThenHandlerWithoutReturn<T> thenHandlerWithoutReturn) {
@@ -57,15 +78,16 @@ public class Promise<T> {
             return null;
         };
 
-        return then(thenHandler, null);
+        return then(thenHandler);
     }
 
-    public Promise<T> catchException(CatchHandler catchHandler) {
+    public void catchException(CatchHandler catchHandler) {
+        this.catchHandler = catchHandler;
+        this.isTerminateOperatorPresent = true;
 
-        if (catchHandler != null && this.catchHandler != null) {
-            this.catchHandler = catchHandler;
-        }
-        return this;
+        // synchronized (this) {
+        // notify();
+        // }
     }
 
 }
